@@ -1,0 +1,112 @@
+def safeExtGet(prop, fallback) {
+    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+buildscript {
+    ext.isNewArchitectureEnabled = { _ ->
+        project.hasProperty("newArchEnabled") && project.newArchEnabled == "true"
+    }
+    // buildscript dependencies are only required when working with the module in isolation (e.g.
+    // during development and for testing). This avoids unnecessary downloads and potential
+    // conflicts when the library is included as a module dependency in an application project.
+    if (project == rootProject) {
+        repositories {
+            google()
+            mavenCentral()
+        }
+        dependencies {
+            classpath 'com.android.tools.build:gradle:8.5.0'
+            if (isNewArchitectureEnabled()) {
+                classpath 'com.facebook.react:react-native-gradle-plugin'
+            }
+        }
+    }
+}
+
+apply plugin: 'com.android.library'
+
+if (isNewArchitectureEnabled()) {
+    apply plugin: "com.facebook.react"
+}
+
+def resolveReactNativeDirectory() {
+    def reactNativeLocation = safeExtGet("REACT_NATIVE_NODE_MODULES_DIR", null)
+    if (reactNativeLocation != null) {
+        return file(reactNativeLocation)
+    }
+
+    // Fallback to node resolver for custom directory structures like monorepos.
+    def reactNativePackage = file(
+            providers.exec {
+                workingDir(rootDir)
+                commandLine("node", "--print", "require.resolve('react-native/package.json')")
+            }.standardOutput.asText.get().trim()
+    )
+    if (reactNativePackage.exists()) {
+        return reactNativePackage.parentFile
+    }
+
+    throw new GradleException("[react-native-linear-gradient] Unable to resolve react-native location in node_modules. Your app should define `REACT_NATIVE_NODE_MODULES_DIR` extension property in `app/build.gradle` with a path to react-native in node_modules.")
+}
+
+def reactNativeRootDir = resolveReactNativeDirectory()
+def reactNativeProperties = new Properties()
+file("$reactNativeRootDir/ReactAndroid/gradle.properties").withInputStream { reactNativeProperties.load(it) }
+
+def REACT_NATIVE_VERSION = reactNativeProperties.getProperty("VERSION_NAME")
+def REACT_NATIVE_MINOR_VERSION = REACT_NATIVE_VERSION.startsWith("0.0.0-") ? 1000 : REACT_NATIVE_VERSION.split("\\.")[1].toInteger()
+
+android {
+    compileSdkVersion safeExtGet('compileSdkVersion', 34).toInteger()
+
+    def agpVersion = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize('.')[0].toInteger()
+    if (agpVersion >= 7) {
+        namespace "com.rnlineargradient"
+    }
+    if (agpVersion >= 8) {
+        buildFeatures.buildConfig true
+    }
+    defaultConfig {
+        minSdkVersion safeExtGet('minSdkVersion', 23)
+        targetSdkVersion safeExtGet('targetSdkVersion', 34)
+        buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+    }
+    sourceSets {
+        main {
+            if (isNewArchitectureEnabled()) {
+                java.srcDirs += ['src/newarch/java']
+            } else {
+                java.srcDirs += ['src/oldarch/java']
+            }
+        }
+    }
+    lintOptions {
+        abortOnError false
+    }
+}
+
+repositories {
+    mavenCentral()
+    if (REACT_NATIVE_MINOR_VERSION <= 70) {
+        maven {
+            // All of React Native (JS, Obj-C sources, Android binaries) is installed from npm
+            url "$rootDir/../node_modules/react-native/android"
+        }
+        maven {
+            // Android JSC is installed from npm
+            url "$rootDir/../node_modules/jsc-android/dist"
+        }
+    }
+    google()
+}
+
+dependencies {
+    if (REACT_NATIVE_MINOR_VERSION <= 70) {
+        //noinspection GradleDynamicVersion
+        implementation 'com.facebook.react:react-native:+'  // From node_modules
+    } else if (project == rootProject) {
+        implementation("com.facebook.react:react-android:$REACT_NATIVE_VERSION")
+    } else {
+        implementation("com.facebook.react:react-android")
+    }
+}
